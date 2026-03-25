@@ -58,7 +58,7 @@ pub struct LogArgs {
     #[clap(value_name = "PATHS", num_args = 0..)]
     pathspec: Vec<String>,
 
-    /// Filter commits by message content
+    /// Filter commits by message content (case-sensitive substring match)
     #[clap(long)]
     pub grep: Option<String>,
 }
@@ -204,12 +204,14 @@ pub async fn execute(args: LogArgs) {
     // default sort with signature time
     reachable_commits.sort_by(|a, b| b.committer.timestamp.cmp(&a.committer.timestamp));
 
-    // Apply grep filtering
+    // Apply grep filtering - 修复空字符串问题
     if let Some(pattern) = &args.grep {
-        reachable_commits = reachable_commits
-            .into_iter()
-            .filter(|commit| commit.message.contains(pattern))
-            .collect();
+        if !pattern.is_empty() {
+            reachable_commits = reachable_commits
+                .into_iter()
+                .filter(|commit| commit.message.contains(pattern))
+                .collect();
+        }
     }
 
     let ref_commits = create_reference_commit_map().await;
@@ -222,7 +224,13 @@ pub async fn execute(args: LogArgs) {
         None
     };
 
-    for commit in reachable_commits {
+    // 创建可见提交的哈希集合，用于graph渲染
+    let visible_hashes: HashSet<SHA1> = reachable_commits
+        .iter()
+        .map(|c| c.id)
+        .collect();
+
+    for commit in &reachable_commits {
         if output_number >= max_output_number {
             break;
         }
@@ -307,7 +315,8 @@ pub async fn execute(args: LogArgs) {
         let paths: Vec<PathBuf> = args.pathspec.iter().map(util::to_workdir_path).collect();
 
         let graph_prefix = if let Some(ref mut gs) = graph_state {
-            gs.render(&commit)
+            // 传入可见提交的哈希集合
+            gs.render(commit, &visible_hashes)
         } else {
             String::new()
         };
@@ -329,7 +338,7 @@ pub async fn execute(args: LogArgs) {
             };
 
             if name_only {
-                let changed_files = get_changed_files_for_commit(&commit, paths.clone()).await;
+                let changed_files = get_changed_files_for_commit(commit, paths.clone()).await;
                 if !changed_files.is_empty() {
                     message.push('\n');
                     for file in changed_files {
@@ -337,7 +346,7 @@ pub async fn execute(args: LogArgs) {
                     }
                 }
             } else if args.stat {
-                let stats = compute_commit_stat(&commit, paths.clone()).await;
+                let stats = compute_commit_stat(commit, paths.clone()).await;
                 let stat_output = format_stat_output(&stats);
                 if !stat_output.is_empty() {
                     message.push('\n');
@@ -369,7 +378,7 @@ pub async fn execute(args: LogArgs) {
             message.push_str(&format!("\n{msg}\n"));
 
             if name_only {
-                let changed_files = get_changed_files_for_commit(&commit, paths.clone()).await;
+                let changed_files = get_changed_files_for_commit(commit, paths.clone()).await;
                 if !changed_files.is_empty() {
                     message.push_str("\nChanged files:\n");
                     for file in changed_files {
@@ -377,10 +386,10 @@ pub async fn execute(args: LogArgs) {
                     }
                 }
             } else if patch {
-                let patch_output = generate_diff(&commit, paths.clone()).await;
+                let patch_output = generate_diff(commit, paths.clone()).await;
                 message.push_str(&patch_output);
             } else if args.stat {
-                let stats = compute_commit_stat(&commit, paths.clone()).await;
+                let stats = compute_commit_stat(commit, paths.clone()).await;
                 let stat_output = format_stat_output(&stats);
                 if !stat_output.is_empty() {
                     message.push('\n');
@@ -444,7 +453,6 @@ pub(crate) async fn get_changed_files_for_commit(
 
     // Added files (in new but not in old)
     for file in &new_files {
-        // Fix: merge nested if statements
         if !old_files.contains(file) && (!should_filter || path_filter.contains(file)) {
             changed_files.push(format!("A\t{}", file.display()));
         }
@@ -630,20 +638,34 @@ impl GraphState {
     ///
     /// Call this method for each commit in traversal order. It returns a string representing
     /// the graph structure (e.g., `* | |`) for the current commit, updating the internal
-    /// columns to reflect parent/child relationships and merges.
+    /// columns to reflect parent/child relationships and merges, but only considering
+    /// commits that are actually visible (not filtered out by grep).
     ///
     /// # Arguments
     ///
     /// * `commit` - The commit to render in the graph.
+    /// * `visible_hashes` - A set of commit hashes that are visible (not filtered out).
     ///
     /// # Returns
     ///
     /// A string containing the ASCII graph prefix for the commit.
-    pub fn render(&mut self, commit: &Commit) -> String {
+    pub fn render(&mut self, commit: &Commit, visible_hashes: &HashSet<SHA1>) -> String {
         let commit_id = commit.id;
         let parent_ids = &commit.parent_commit_ids;
 
         let mut prefix = String::new();
+
+        // 过滤出可见的父提交
+        let visible_parents: Vec<_> = parent_ids
+            .iter()
+            .filter(|id| {
+                if let Ok(hash) = SHA1::from_str(&id.to_string()) {
+                    visible_hashes.contains(&hash)
+                } else {
+                    false
+                }
+            })
+            .collect();
 
         if let Some(pos) = self.columns.iter().position(|&c| c == Some(commit_id)) {
             for (i, col) in self.columns.iter().enumerate() {
@@ -656,19 +678,20 @@ impl GraphState {
                 }
             }
 
-            if parent_ids.is_empty() {
+            if visible_parents.is_empty() {
                 self.columns[pos] = None;
-            } else if parent_ids.len() == 1 {
-                let parent_hash = SHA1::from_str(&parent_ids[0].to_string()).unwrap_or_else(|_| {
-                    panic!("failed to parse parent SHA1 for commit {}", commit_id)
-                });
+            } else if visible_parents.len() == 1 {
+                let parent_hash = SHA1::from_str(&visible_parents[0].to_string())
+                    .unwrap_or_else(|_| {
+                        panic!("failed to parse parent SHA1 for commit {}", commit_id)
+                    });
                 self.columns[pos] = Some(parent_hash);
             } else {
-                let first_parent = SHA1::from_str(&parent_ids[0].to_string())
+                let first_parent = SHA1::from_str(&visible_parents[0].to_string())
                     .expect("failed to parse first parent SHA1");
                 self.columns[pos] = Some(first_parent);
 
-                for parent_id in parent_ids.iter().skip(1) {
+                for parent_id in visible_parents.iter().skip(1) {
                     let parent_hash = SHA1::from_str(&parent_id.to_string()).unwrap_or_else(|_| {
                         panic!(
                             "failed to parse parent SHA1 {} for commit {}",
@@ -679,18 +702,19 @@ impl GraphState {
                 }
             }
         } else {
+            // 新提交，插入到开头
             self.columns.insert(0, None);
             prefix.push_str("* ");
             for _ in 1..self.columns.len() {
                 prefix.push_str("| ");
             }
 
-            if !parent_ids.is_empty() {
-                let parent_hash = SHA1::from_str(&parent_ids[0].to_string())
+            if !visible_parents.is_empty() {
+                let parent_hash = SHA1::from_str(&visible_parents[0].to_string())
                     .expect("failed to parse parent SHA1");
                 self.columns[0] = Some(parent_hash);
 
-                for parent_id in parent_ids.iter().skip(1) {
+                for parent_id in visible_parents.iter().skip(1) {
                     let parent_hash = SHA1::from_str(&parent_id.to_string()).unwrap_or_else(|_| {
                         panic!(
                             "failed to parse parent SHA1 {} for commit {}",
@@ -702,6 +726,7 @@ impl GraphState {
             }
         }
 
+        // 清理空列
         self.columns.retain(|c| c.is_some());
 
         prefix
@@ -857,7 +882,6 @@ mod tests {
         let args =
             LogArgs::parse_from(["libra", "log", "--name-only", "src/main.rs", "src/lib.rs"]);
         assert!(args.name_only);
-        // Update expected pathspec value to include "log"
         assert_eq!(args.pathspec, vec!["log", "src/main.rs", "src/lib.rs"]);
     }
 
@@ -887,7 +911,8 @@ mod tests {
     // Test grep combined with other arguments
     #[test]
     fn test_grep_with_other_args() {
-        let args = LogArgs::parse_from(["libra", "log", "--grep", "feature", "--oneline", "-n", "5"]);
+        let args =
+            LogArgs::parse_from(["libra", "log", "--grep", "feature", "--oneline", "-n", "5"]);
         assert_eq!(args.grep, Some("feature".to_string()));
         assert!(args.oneline);
         assert_eq!(args.number, Some(5));
@@ -898,5 +923,23 @@ mod tests {
     fn test_grep_case_sensitive() {
         let args = LogArgs::parse_from(["libra", "log", "--grep", "FIX"]);
         assert_eq!(args.grep, Some("FIX".to_string()));
+    }
+
+    // 新增测试：测试空字符串grep
+    #[test]
+    fn test_grep_empty_string() {
+        let args = LogArgs::parse_from(["libra", "log", "--grep", ""]);
+        assert_eq!(args.grep, Some("".to_string()));
+        
+        // 在实际执行中，空字符串会被跳过过滤
+        // 这个测试确保参数解析正确
+    }
+
+    // 新增测试：测试graph与grep组合
+    #[test]
+    fn test_graph_with_grep() {
+        let args = LogArgs::parse_from(["libra", "log", "--graph", "--grep", "fix"]);
+        assert!(args.graph);
+        assert_eq!(args.grep, Some("fix".to_string()));
     }
 }

@@ -7,6 +7,7 @@ use libra::diff_engine::Diff;
 use libra::utils::object_ext::TreeExt;
 use libra::utils::util;
 use std::cmp::min;
+use std::collections::HashSet;
 use std::str::FromStr;
 #[tokio::test]
 #[serial]
@@ -582,7 +583,12 @@ async fn test_log_graph() {
     let commit_hash = SHA1::from_str(&commit_id).unwrap();
     let commit = load_object::<Commit>(&commit_hash).unwrap();
 
-    let prefix = graph_state.render(&commit);
+    // 创建 visible_hashes 集合，包含当前提交
+    let mut visible_hashes = HashSet::new();
+    visible_hashes.insert(commit.id);
+    
+    // 修改调用，传入第二个参数
+    let prefix = graph_state.render(&commit, &visible_hashes);
     assert!(!prefix.is_empty());
     assert!(prefix.contains('*'));
 }
@@ -646,9 +652,13 @@ async fn test_log_graph_simple_chain() {
     let reachable_commits = get_reachable_commits(commit_hash).await;
 
     let mut graph_state = libra::command::log::GraphState::new();
+    
+    // 创建 visible_hashes 集合，包含所有可访问的提交
+    let visible_hashes: HashSet<SHA1> = reachable_commits.iter().map(|c| c.id).collect();
 
     for commit in reachable_commits.iter().take(2) {
-        let prefix = graph_state.render(commit);
+        // 修改调用，传入第二个参数
+        let prefix = graph_state.render(commit, &visible_hashes);
         assert!(prefix.starts_with("* ") || prefix.contains("* "));
     }
 }
@@ -696,6 +706,12 @@ async fn test_log_stat_and_graph_combined() {
     assert_eq!(stats.len(), 1);
 
     let mut graph_state = libra::command::log::GraphState::new();
-    let prefix = graph_state.render(&commit);
+    
+    // 创建 visible_hashes 集合，包含当前提交
+    let mut visible_hashes = HashSet::new();
+    visible_hashes.insert(commit.id);
+    
+    // 修改调用，传入第二个参数
+    let prefix = graph_state.render(&commit, &visible_hashes);
     assert!(!prefix.is_empty());
 }
