@@ -586,7 +586,7 @@ async fn test_log_graph() {
     // 创建 visible_hashes 集合，包含当前提交
     let mut visible_hashes = HashSet::new();
     visible_hashes.insert(commit.id);
-    
+
     // 修改调用，传入第二个参数
     let prefix = graph_state.render(&commit, &visible_hashes);
     assert!(!prefix.is_empty());
@@ -652,7 +652,7 @@ async fn test_log_graph_simple_chain() {
     let reachable_commits = get_reachable_commits(commit_hash).await;
 
     let mut graph_state = libra::command::log::GraphState::new();
-    
+
     // 创建 visible_hashes 集合，包含所有可访问的提交
     let visible_hashes: HashSet<SHA1> = reachable_commits.iter().map(|c| c.id).collect();
 
@@ -706,11 +706,11 @@ async fn test_log_stat_and_graph_combined() {
     assert_eq!(stats.len(), 1);
 
     let mut graph_state = libra::command::log::GraphState::new();
-    
+
     // 创建 visible_hashes 集合，包含当前提交
     let mut visible_hashes = HashSet::new();
     visible_hashes.insert(commit.id);
-    
+
     // 修改调用，传入第二个参数
     let prefix = graph_state.render(&commit, &visible_hashes);
     assert!(!prefix.is_empty());

@@ -225,10 +225,7 @@ pub async fn execute(args: LogArgs) {
     };
 
     // 创建可见提交的哈希集合，用于graph渲染
-    let visible_hashes: HashSet<SHA1> = reachable_commits
-        .iter()
-        .map(|c| c.id)
-        .collect();
+    let visible_hashes: HashSet<SHA1> = reachable_commits.iter().map(|c| c.id).collect();
 
     for commit in &reachable_commits {
         if output_number >= max_output_number {
@@ -681,8 +678,8 @@ impl GraphState {
             if visible_parents.is_empty() {
                 self.columns[pos] = None;
             } else if visible_parents.len() == 1 {
-                let parent_hash = SHA1::from_str(&visible_parents[0].to_string())
-                    .unwrap_or_else(|_| {
+                let parent_hash =
+                    SHA1::from_str(&visible_parents[0].to_string()).unwrap_or_else(|_| {
                         panic!("failed to parse parent SHA1 for commit {}", commit_id)
                     });
                 self.columns[pos] = Some(parent_hash);
@@ -930,7 +927,7 @@ mod tests {
     fn test_grep_empty_string() {
         let args = LogArgs::parse_from(["libra", "log", "--grep", ""]);
         assert_eq!(args.grep, Some("".to_string()));
-        
+
         // 在实际执行中，空字符串会被跳过过滤
         // 这个测试确保参数解析正确
     }
